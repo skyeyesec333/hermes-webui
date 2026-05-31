@@ -4,7 +4,6 @@ Hermes Web UI -- HTTP helper functions.
 import json as _json
 import os
 import re as _re
-import ssl
 from pathlib import Path
 from api.config import IMAGE_EXTS, MD_EXTS
 
@@ -12,12 +11,16 @@ from api.config import IMAGE_EXTS, MD_EXTS
 # Treat stalled/closed HTTP clients as normal disconnects.  Long-lived SSE
 # connections often end this way when a browser tab sleeps, a phone switches
 # networks, or Tailscale leaves the socket half-closed.
+#
+# ssl.SSLError subclasses OSError, so the bare OSError arm already catches
+# SSL-level disconnects.  We keep OSError explicitly for socket-level errors
+# (errno 32 EPIPE, 54 ECONNRESET, 104 ECONNABORTED, 110 ETIMEDOUT).
 _CLIENT_DISCONNECT_ERRORS = (
     BrokenPipeError,
     ConnectionResetError,
     ConnectionAbortedError,
     TimeoutError,
-    ssl.SSLError,
+    OSError,
 )
 
 

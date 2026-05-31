@@ -40,19 +40,6 @@ from api.session_events import (
 
 logger = logging.getLogger(__name__)
 
-# Treat stalled/closed HTTP clients as normal disconnects.  Long-lived SSE
-# connections often end this way when a browser tab sleeps, a phone switches
-# networks, or Tailscale leaves the socket half-closed.  If these bubble to the
-# request handler, the server logs 500s and can leave CLOSE-WAIT sockets around
-# until the OS-level timeout fires.
-_CLIENT_DISCONNECT_ERRORS = (
-    BrokenPipeError,
-    ConnectionResetError,
-    ConnectionAbortedError,
-    TimeoutError,
-    OSError,
-)
-
 # ── Cron run tracking ────────────────────────────────────────────────────────
 # Track job IDs currently being executed so the frontend can poll status.
 _RUNNING_CRON_JOBS: dict[str, float] = {}  # job_id → start_timestamp
@@ -1054,6 +1041,7 @@ from api.helpers import (
     _sanitize_error,
     redact_session_data,
     _redact_text,
+    _CLIENT_DISCONNECT_ERRORS,
 )
 from api.agent_health import build_agent_health_payload
 from api.gateway_chat import gateway_chat_config_status

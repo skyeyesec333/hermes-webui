@@ -44,13 +44,11 @@ def test_msg_question_jump_btn_mobile_has_visible_styling():
 
 
 def test_msg_question_jump_btn_text_span_hidden_on_mobile():
-    """Assert that the text span (second child) is hidden on mobile."""
+    """Assert that the text span is hidden inside the mobile media query, not globally."""
     css_content = _CSS_PATH.read_text(encoding='utf-8')
 
-    span_hide_pattern = r'\.msg-question-jump-btn\s+span:last-child\s*\{\s*display\s*:\s*none\s*;\s*\}'
-    span_hide_match = re.search(span_hide_pattern, css_content, re.DOTALL)
-
-    assert span_hide_match is not None, (
-        "Missing span:last-child { display: none; } rule for .msg-question-jump-btn. "
-        "The mobile media query should hide the text span while keeping the button visible."
+    pattern = r'@media\s*\([^)]*max-width\s*:\s*600px[^)]*\)\s*\{.*?\.msg-question-jump-btn\s+span:last-child\s*\{\s*display\s*:\s*none'
+    assert re.search(pattern, css_content, re.DOTALL) is not None, (
+        "Missing span:last-child { display: none; } inside a mobile media query. "
+        "The rule must be scoped to @media (max-width: 600px), not applied globally."
     )

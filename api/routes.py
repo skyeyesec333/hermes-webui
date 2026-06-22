@@ -16668,7 +16668,10 @@ def _handle_push_unsubscribe(handler, body):
             endpoint = str(body["subscription"].get("endpoint") or "").strip()
     if not endpoint:
         return bad(handler, "subscription endpoint is required", 400)
-    removed = remove_subscription(endpoint, owner_key=get_push_owner(handler))
+    owner_key = get_push_owner(handler)
+    if not owner_key:
+        return bad(handler, "Web Push owner is required", 400)
+    removed = remove_subscription(endpoint, owner_key=owner_key)
     return j(handler, {"ok": True, "removed": removed})
 
 

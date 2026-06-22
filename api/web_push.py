@@ -184,6 +184,8 @@ def remove_subscription(endpoint: str, *, owner_key: str | None = None) -> bool:
     if not endpoint:
         return False
     owner = str(owner_key or "").strip()
+    if not owner:
+        return False
 
     def _apply(store: dict) -> tuple[bool, bool]:
         before = len(store["subscriptions"])
@@ -192,7 +194,7 @@ def remove_subscription(endpoint: str, *, owner_key: str | None = None) -> bool:
             for sub in store["subscriptions"]
             if not (
                 sub.get("endpoint") == endpoint
-                and (not owner or str(sub.get("owner") or "").strip() == owner)
+                and str(sub.get("owner") or "").strip() == owner
             )
         ]
         changed = len(store["subscriptions"]) != before

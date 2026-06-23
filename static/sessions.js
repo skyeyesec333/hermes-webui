@@ -1561,6 +1561,26 @@ function _sessionSourceLabel(filter, count) {
   return filter === 'cli' ? `CLI sessions (${n})` : `WebUI sessions (${n})`;
 }
 
+function _clearSessionSourceTabCounts() {
+  _serverWebuiSessionCount = null;
+  _serverCliSessionCount = null;
+}
+
+function _sessionListQueryString() {
+  const qs = new URLSearchParams();
+  const requestSidebarSource = window._showCliSessions ? _sessionSourceFilter : 'webui';
+  qs.set('sidebar_source', requestSidebarSource);
+  if(_showAllProfiles) qs.set('all_profiles','1');
+  if(_showArchived) qs.set('include_archived','1');
+  return qs.toString() ? `?${qs.toString()}` : '';
+}
+
+function _sessionSourceTabCount(filter, renderedWebuiSessionCount, renderedCliSessionCount) {
+  const serverCount = filter === 'cli' ? _serverCliSessionCount : _serverWebuiSessionCount;
+  if (Number.isFinite(serverCount)) return serverCount;
+  return filter === 'cli' ? renderedCliSessionCount : renderedWebuiSessionCount;
+}
+
 function _setSessionSourceFilter(filter) {
   const next = filter === 'cli' ? 'cli' : 'webui';
   if (_sessionSourceFilter === next) return;
@@ -3836,12 +3856,7 @@ async function _runRenderSessionListRefresh(opts, _gen){
   if(!deferWhileInteracting) _pendingSessionListPayload=null;
   try{
     if(!($('sessionSearch').value||'').trim()) _contentSearchResults = [];
-    const qs = new URLSearchParams();
-    const requestSidebarSource = window._showCliSessions ? _sessionSourceFilter : 'webui';
-    qs.set('sidebar_source', requestSidebarSource);
-    if(_showAllProfiles) qs.set('all_profiles','1');
-    if(_showArchived) qs.set('include_archived','1');
-    const sessionListQS = qs.toString() ? `?${qs.toString()}` : '';
+    const sessionListQS = _sessionListQueryString();
     const sessionRequestOpts={
       timeoutToast:false,
       timeoutMs:_sessionListHasLoadedOnce?30000:_SESSION_LIST_BOOT_TIMEOUT_MS,
@@ -3902,6 +3917,7 @@ async function _runRenderSessionListRefresh(opts, _gen){
     } else {
       _allSessions = [];
       _allSessionsScope = null;
+      _clearSessionSourceTabCounts();
       renderSessionListFromCache();
     }
   }
@@ -5564,12 +5580,8 @@ function renderSessionListFromCache(){
   const sessions=_renderSidebarRowsFromRawSessions(sessionsRaw, referenceRaw);
   const renderedWebuiSessionCount=_renderSidebarRowsFromRawSessions(webuiSessionsRaw, webuiReferenceRaw).length;
   const renderedCliSessionCount=_renderSidebarRowsFromRawSessions(cliSessionsRaw, cliReferenceRaw).length;
-  const webuiSessionTabCount=Number.isFinite(_serverWebuiSessionCount)
-    ? _serverWebuiSessionCount
-    : renderedWebuiSessionCount;
-  const cliSessionTabCount=Number.isFinite(_serverCliSessionCount)
-    ? _serverCliSessionCount
-    : renderedCliSessionCount;
+  const webuiSessionTabCount=_sessionSourceTabCount('webui', renderedWebuiSessionCount, renderedCliSessionCount);
+  const cliSessionTabCount=_sessionSourceTabCount('cli', renderedWebuiSessionCount, renderedCliSessionCount);
   _syncSidebarExpansionForActiveSession(sessions, activeSidForSidebar);
   const list=$('sessionList');
   const animateRefresh=_sessionListRefreshAnimationPending;

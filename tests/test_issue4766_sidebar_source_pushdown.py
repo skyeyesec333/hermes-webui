@@ -101,6 +101,11 @@ def _extract_function(source_text, function_name):
     raise AssertionError(f"Could not extract {function_name}")
 
 
+def _run_node(script):
+    proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(proc.stdout)
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     routes._session_list_cache_clear()
@@ -233,19 +238,33 @@ def test_sidebar_source_varies_cache_key():
 def test_frontend_sends_sidebar_source_param():
     src = SESSIONS_JS.read_text(encoding="utf-8")
 
-    assert "const requestSidebarSource = window._showCliSessions ? _sessionSourceFilter : 'webui';" in src
+    assert "function _sessionListQueryString()" in src
     assert "qs.set('sidebar_source', requestSidebarSource);" in src
     assert "_serverWebuiSessionCount" in src
     assert "_serverCliSessionCount" in src
-    assert "Number.isFinite(_serverWebuiSessionCount)" in src
-    assert "Number.isFinite(_serverCliSessionCount)" in src
-    assert "_sessionSourceLabel(filter,count)" in src
+    assert "function _sessionSourceTabCount(" in src
 
 
-def test_frontend_avoids_cli_bucket_request_when_cli_hidden():
+@pytest.mark.skipif(NODE is None, reason="node not on PATH")
+def test_session_list_query_string_respects_sidebar_source_and_flags():
     src = SESSIONS_JS.read_text(encoding="utf-8")
+    query_fn = _extract_function(src, "_sessionListQueryString")
+    script = f"""
+global.window = {{ _showCliSessions: true }};
+global._sessionSourceFilter = 'cli';
+global._showAllProfiles = true;
+global._showArchived = false;
+{query_fn}
+const first = _sessionListQueryString();
+window._showCliSessions = false;
+global._showArchived = true;
+const second = _sessionListQueryString();
+console.log(JSON.stringify({{ first, second }}));
+"""
+    body = _run_node(script)
 
-    assert "window._showCliSessions ? _sessionSourceFilter : 'webui'" in src
+    assert body["first"] == "?sidebar_source=cli&all_profiles=1"
+    assert body["second"] == "?sidebar_source=webui&all_profiles=1&include_archived=1"
 
 
 @pytest.mark.skipif(NODE is None, reason="node not on PATH")
@@ -279,8 +298,7 @@ console.log(JSON.stringify({{
   renderCalls,
 }}));
 """
-    proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
-    body = json.loads(proc.stdout)
+    body = _run_node(script)
 
     assert body["sourceFilter"] == "cli"
     assert body["activeProject"] is None
@@ -288,6 +306,73 @@ console.log(JSON.stringify({{
     assert body["sessionSelectMode"] is False
     assert body["storageWrites"] == [["hermes-session-source-filter", "cli"]]
     assert body["renderCalls"] == [{"deferWhileInteracting": False}]
+
+
+@pytest.mark.skipif(NODE is None, reason="node not on PATH")
+def test_apply_payload_and_tab_count_helpers_cover_old_and_new_payloads():
+    src = SESSIONS_JS.read_text(encoding="utf-8")
+    apply_fn = _extract_function(src, "_applySessionListPayload")
+    count_fn = _extract_function(src, "_sessionSourceTabCount")
+    clear_fn = _extract_function(src, "_clearSessionSourceTabCounts")
+    script = f"""
+global._otherProfileCount = 0;
+global._archivedWebuiCount = 0;
+global._archivedCliCount = 0;
+global._serverWebuiSessionCount = null;
+global._serverCliSessionCount = null;
+global._serverTimeDelta = 0;
+global._serverTz = null;
+global._optimisticallyRemovedSessionIds = new Set();
+global._allSessions = [];
+global._allSessionsScope = null;
+global._allProjects = [];
+global._sessionListLoadError = null;
+global._sessionListHasLoadedOnce = false;
+global._sessionListFirstRenderAnimated = true;
+global._sessionListSkeletonActive = true;
+global._showAllProfiles = false;
+global.S = {{ activeProfile: 'default' }};
+global._reconcileActiveSessionIdleStateFromList = rows => rows;
+global._mergeOptimisticFirstTurnSessions = rows => rows;
+global._syncSessionAttentionSoundState = () => {{}};
+global._pruneLineageReportCacheToVisibleSessions = () => {{}};
+global._markPollingCompletionUnreadTransitions = () => {{}};
+global._isSessionEffectivelyStreaming = () => false;
+global.startStreamingPoll = () => {{}};
+global.stopStreamingPoll = () => {{}};
+global.ensureSessionTimeRefreshPoll = () => {{}};
+global.ensureActiveSessionExternalRefreshPoll = () => {{}};
+global.ensureSessionEventsSSE = () => {{}};
+global.animateNextSessionListRefresh = () => {{}};
+global.renderSessionListFromCache = () => {{}};
+{clear_fn}
+{count_fn}
+{apply_fn}
+const sessions = [{{ session_id: 'webui-1' }}];
+_applySessionListPayload({{ sessions, other_profile_count: 0, archived_count: 0, active_profile: 'default' }}, {{ projects: [] }});
+const oldPayload = {{
+  webui: _sessionSourceTabCount('webui', 7, 3),
+  cli: _sessionSourceTabCount('cli', 7, 3),
+}};
+_clearSessionSourceTabCounts();
+_applySessionListPayload({{
+  sessions,
+  other_profile_count: 0,
+  archived_count: 0,
+  active_profile: 'default',
+  webui_session_count: 11,
+  cli_session_count: 5,
+}}, {{ projects: [] }});
+const newPayload = {{
+  webui: _sessionSourceTabCount('webui', 7, 3),
+  cli: _sessionSourceTabCount('cli', 7, 3),
+}};
+console.log(JSON.stringify({{ oldPayload, newPayload }}));
+"""
+    body = _run_node(script)
+
+    assert body["oldPayload"] == {"webui": 7, "cli": 3}
+    assert body["newPayload"] == {"webui": 11, "cli": 5}
 
 
 def test_session_list_response_omits_bucket_counts_when_missing(monkeypatch):
@@ -311,6 +396,12 @@ def test_session_list_response_omits_bucket_counts_when_missing(monkeypatch):
     assert "webui_session_count" not in body
     assert "cli_session_count" not in body
     assert body["sessions"][0]["session_id"] == "webui-1"
+
+
+def test_scope_mismatch_error_path_clears_server_tab_counts():
+    src = SESSIONS_JS.read_text(encoding="utf-8")
+
+    assert "_clearSessionSourceTabCounts();" in src
 
 
 def test_payload_row_count_regression(monkeypatch):

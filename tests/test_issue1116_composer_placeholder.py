@@ -81,8 +81,12 @@ class TestComposerPlaceholderProfile:
         # Find the function block (starts with 'async function switchToProfile')
         m = re.search(r'async function switchToProfile\s*\(', src)
         assert m, "switchToProfile must be an async function"
-        # Get everything after the function declaration (enough context)
-        after = src[m.start():m.start()+5000]
+        # Get everything after the function declaration (enough context).
+        # Window widened 5000 -> 6500 (#4671): the profile-switch loading-skeleton
+        # logic grew switchToProfile, pushing the applyBotName() call to ~char 5618.
+        # The call still fires on every switch; this is a proximity-window adjustment,
+        # not a behavior change (same brittle-window class as the #4720 rotate-url test).
+        after = src[m.start():m.start()+6500]
         assert "applyBotName" in after, \
             "switchToProfile must call applyBotName after profile switch"
 

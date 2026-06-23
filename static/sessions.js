@@ -3755,6 +3755,12 @@ function _applySessionListPayload(sessData, projData){
     _sessionListFirstRenderAnimated=true;
   }
   ensureSessionEventsSSE();
+  // #4671: this payload is the freshly-resolved /api/sessions response (and a superseded
+  // response was already discarded by the generation guard upstream), so _allSessions now
+  // holds the CURRENT profile's rows. Clear the skeleton flag right before painting so this
+  // authoritative render replaces the profile-switch skeleton — while unrelated renders that
+  // fire before this point stay blocked by the guard in renderSessionListFromCache().
+  _sessionListSkeletonActive = false;
   renderSessionListFromCache();  // no-ops if rename is in progress
 }
 
@@ -3829,6 +3835,10 @@ async function _runRenderSessionListRefresh(opts, _gen){
     const _scopeMatches = _allSessionsScope
       && _allSessionsScope.profile === _curScope.profile
       && _allSessionsScope.allProfiles === _curScope.allProfiles;
+    // #4671: the /api/sessions fetch failed — clear the skeleton flag so this error
+    // render (matched cache, or empty rows for a mismatched scope) replaces the
+    // up-front profile-switch skeleton instead of stranding it.
+    _sessionListSkeletonActive = false;
     if (_scopeMatches) {
       renderSessionListFromCache();
     } else {
@@ -5429,6 +5439,14 @@ function _renderSidebarRowsFromRawSessions(sessionsRaw, referenceSessionsRaw){
 
 
 function renderSessionListFromCache(){
+  // #4671: while a profile-switch skeleton is up, bail — _allSessions still holds the
+  // PREVIOUS profile's rows until /api/sessions resolves, so any unrelated caller
+  // (sidebar SSE syncs, stream/unread updates, gateway-poll timers, panel-resync
+  // repairs) hitting this mid-switch would repaint the wrong profile's rows over the
+  // skeleton. The authoritative switch render clears the flag from inside
+  // _applySessionListPayload — once _allSessions is fresh — so only a render backed by
+  // up-to-date data replaces the skeleton. The failure-restore path clears it too.
+  if(_sessionListSkeletonActive) return;
   // Don't re-render while user is actively renaming a session (would destroy the input)
   if(_renamingSid) return;
   // Keep the per-conversation actions menu stable while the user is trying to

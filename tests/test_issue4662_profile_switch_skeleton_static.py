@@ -56,6 +56,8 @@ class TestSwitchWiring:
     def test_restores_real_content_on_failure(self):
         body = _switch_body()
         catch = body[body.index("} catch (e) {"):]
+        # #4671: failure-restore clears the skeleton flag (asserted in
+        # test_switch_failure_restore_clears_skeleton) then re-renders the real list.
         assert "renderSessionListFromCache()" in catch, "failed switch must restore real list"
 
     def test_failure_path_clears_workspace_skeleton_when_no_workspace(self):
@@ -215,3 +217,89 @@ class TestSkeletonCss:
         assert "--skeleton-base:" in compact
         assert "--skeleton-sheen:" in compact
         assert ":root.dark{--skeleton-base:" in compact
+
+
+def _iter_indices(haystack: str, needle: str):
+    """Yield every start index of needle in haystack."""
+    i = haystack.find(needle)
+    while i != -1:
+        yield i
+        i = haystack.find(needle, i + 1)
+
+
+class TestSwitchRaceGuards:
+    """#4671: the two render races the Codex gate caught on the rebased stage."""
+
+    def test_session_skeleton_guard_blocks_non_switch_renders(self):
+        # Race-2: while the profile-switch skeleton is up, renderSessionListFromCache()
+        # must early-return, so a gateway-poll/SSE/timer/cache render can't repaint the
+        # PREVIOUS profile's cached _allSessions over the skeleton in the window before
+        # /api/sessions resolves.
+        idx = SESSIONS.index("function renderSessionListFromCache(")
+        head = SESSIONS[idx: idx + 800]
+        # signature unchanged (many static tests anchor on the empty-paren marker)
+        assert "function renderSessionListFromCache(){" in SESSIONS, (
+            "renderSessionListFromCache signature must stay () — tests anchor on it"
+        )
+        assert "if(_sessionListSkeletonActive) return;" in head, (
+            "renderSessionListFromCache must bail while the profile-switch skeleton is up"
+        )
+
+    def test_skeleton_flag_cleared_by_authoritative_render_when_data_is_fresh(self):
+        # Race-2 (the other half): the skeleton flag must be cleared ONLY when fresh data
+        # is in hand, so the bail above can't strand the skeleton. _applySessionListPayload
+        # runs on the resolved /api/sessions payload (superseded responses already discarded
+        # by the generation guard), so it clears the flag right before painting.
+        apply_idx = SESSIONS.index("function _applySessionListPayload(")
+        apply_body = SESSIONS[apply_idx: SESSIONS.index("\nfunction _mergeRenderSessionListOptions(", apply_idx)]
+        clear_pos = apply_body.find("_sessionListSkeletonActive = false;")
+        paint_pos = apply_body.find("renderSessionListFromCache();")
+        assert clear_pos != -1, "_applySessionListPayload must clear the skeleton flag"
+        assert paint_pos != -1 and clear_pos < paint_pos, (
+            "the skeleton flag must be cleared right before the authoritative paint"
+        )
+        # And the fetch-failure path must clear it too (else a failed switch strands it):
+        refresh = SESSIONS[SESSIONS.index("async function _runRenderSessionListRefresh("):]
+        refresh = refresh[: refresh.index("\nasync function _drainRenderSessionListQueue(")]
+        assert refresh.count("_sessionListSkeletonActive = false;") >= 1, (
+            "the /api/sessions failure path must clear the skeleton flag so it can't strand"
+        )
+
+    def test_switch_failure_restore_clears_skeleton(self):
+        # The switchToProfile catch (failure on the still-current previous profile) must
+        # clear the skeleton flag before restoring the real list, or the skeleton strands.
+        body = _switch_body()
+        catch = body[body.index("} catch (e) {"):]
+        clear_pos = catch.find("_sessionListSkeletonActive = false;")
+        restore_pos = catch.find("renderSessionListFromCache()")
+        assert clear_pos != -1, "switch failure path must clear the skeleton flag"
+        assert restore_pos != -1 and clear_pos < restore_pos, (
+            "skeleton flag must be cleared before the failure-restore render"
+        )
+
+    def test_workspace_tree_generation_token_guards_loaddir(self):
+        # Race-1 (CORE): an empty-session profile switch reuses the same session_id, so
+        # loadDir()'s session_id guard alone can't reject a stale pre-switch /api/list.
+        # A _wsTreeGen generation token, bumped UNCONDITIONALLY at switch start (even when
+        # the workspace panel is closed, since loadDir('.') still runs), gates loadDir().
+        assert "_wsTreeGen" in WORKSPACE, "missing workspace-tree generation token"
+        assert "function bumpWorkspaceTreeGen(" in WORKSPACE, "missing bumpWorkspaceTreeGen helper"
+        # switchToProfile bumps it unconditionally (NOT only inside the panel-gated skeleton call)
+        body = _switch_body()
+        assert "bumpWorkspaceTreeGen()" in body, (
+            "switchToProfile must bump the workspace-tree generation at switch start"
+        )
+        bump_idx = body.index("bumpWorkspaceTreeGen()")
+        wsskel_idx = body.index("showWorkspaceTreeSkeleton()")
+        assert bump_idx < wsskel_idx, (
+            "the unconditional bump must precede the panel-gated showWorkspaceTreeSkeleton"
+        )
+        # loadDir captures + re-checks the generation after BOTH awaited /api/list points
+        ld = WORKSPACE[WORKSPACE.index("async function loadDir("):]
+        ld = ld[: ld.index("\nfunction refreshWorkspacePanel(")]
+        assert "const treeGen=_wsTreeGen" in ld, "loadDir must capture the tree generation at call time"
+        assert ld.count("treeGen!==_wsTreeGen") >= 2, (
+            "loadDir must re-check the tree generation after BOTH awaited /api/list points "
+            "(root render + expanded-dirs prefetch) and discard stale renders"
+        )
+

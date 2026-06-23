@@ -5938,6 +5938,12 @@ async function switchToProfile(name) {
   if (typeof closeSessionActionMenu === 'function') closeSessionActionMenu();
   if (typeof showSessionListSkeleton === 'function') showSessionListSkeleton();
   const _workspaceVisibleAtStart = typeof _workspacePanelMode !== 'undefined' && _workspacePanelMode !== 'closed';
+  // #4671 CORE: invalidate any in-flight workspace-tree load UNCONDITIONALLY at switch
+  // start — even when the panel is closed, loadDir('.') still runs later in the switch,
+  // and an empty-session switch reuses the same session_id so loadDir's id guard alone
+  // can't reject a stale previous-workspace /api/list. Bumping the generation here (not
+  // only inside showWorkspaceTreeSkeleton, which is panel-gated) closes the closed-panel race.
+  if (typeof bumpWorkspaceTreeGen === 'function') bumpWorkspaceTreeGen();
   if (_workspaceVisibleAtStart && typeof showWorkspaceTreeSkeleton === 'function') showWorkspaceTreeSkeleton();
 
   // Determine whether the current session has any messages.
@@ -6119,9 +6125,11 @@ async function switchToProfile(name) {
     // are intact — restore the real list/tree so the loading skeletons we showed
     // up front don't strand. (#4662)
     if (_switchGen === _profileSwitchGeneration) {
-      if (typeof _sessionListSkeletonActive === 'undefined' || _sessionListSkeletonActive) {
-        if (typeof renderSessionListFromCache === 'function') renderSessionListFromCache();
-      }
+      // The switch failed; _allSessions still holds the (still-current) previous
+      // profile, so clear the skeleton flag and re-render to restore the real list
+      // rather than strand the up-front skeleton (#4671).
+      _sessionListSkeletonActive = false;
+      if (typeof renderSessionListFromCache === 'function') renderSessionListFromCache();
       if (_workspaceVisibleAtStart && S.session && S.session.workspace && typeof loadDir === 'function') {
         loadDir('.');
       } else if (_workspaceVisibleAtStart && typeof clearWorkspaceTreeSkeleton === 'function') {

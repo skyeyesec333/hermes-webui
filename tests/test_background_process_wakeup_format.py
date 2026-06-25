@@ -15,6 +15,28 @@ def test_format_wakeup_prompt_skips_unknown_event_type():
     assert format_wakeup_prompt(evt) is None
 
 
+def test_format_wakeup_prompt_handles_async_delegation():
+    """#4912 — async_delegation completion events (from a background
+    delegate_task) must be rendered, not silently dropped, so the subagent
+    result re-enters the parent conversation. Delegates to the agent-side
+    formatter, which knows the async_delegation shape."""
+    evt = {
+        "type": "async_delegation",
+        "session_id": "proc_deleg1",
+        "session_key": "webui-session",
+        "task_id": "t_1",
+        "summary": "Subagent finished: computed the answer is 42.",
+        "status": "completed",
+    }
+    result = format_wakeup_prompt(evt)
+    assert result is not None, (
+        "async_delegation completion must produce a wakeup prompt (#4912), "
+        "not be dropped"
+    )
+    # The agent-side formatter renders an async-delegation notification.
+    assert "ASYNC DELEGATION" in result.upper() or "subagent" in result.lower()
+
+
 def test_format_wakeup_prompt_handles_watch_disabled():
     evt = {
         "type": "watch_disabled",

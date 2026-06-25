@@ -1305,8 +1305,6 @@ def test_board_payload_includes_unassigned_ready_tasks_without_assignee_filter(m
     fake_kanban = sys.modules["hermes_cli.kanban_db"]
 
     # Seed an unassigned ready task alongside the existing assigned one.
-    from dataclasses import dataclass
-
     unassigned_task = FakeTask("t_unassigned_ready", "Unassigned ready task", "ready", None)
     fake_kanban.tasks.append(unassigned_task)
 

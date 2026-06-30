@@ -115,12 +115,21 @@ def _preflight_office_archive(office_format: str, raw: bytes) -> None:
         for info in file_infos:
             member_name = _normalise_archive_member_name(info.filename)
             member_limit = _archive_member_byte_limit(office_format, member_name)
-            if info.file_size > member_limit:
-                raise _office_archive_limit_error()
-            if info.file_size > 0 and info.file_size > max(info.compress_size, 1) * MAX_OFFICE_ARCHIVE_MAX_COMPRESSION_RATIO:
-                raise _office_archive_limit_error()
-            total_uncompressed += info.file_size
-            if total_uncompressed > MAX_OFFICE_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES:
+            member_size = 0
+            try:
+                member = archive.open(info)
+            except Exception as exc:  # pragma: no cover - malformed archive path
+                raise _office_preview_read_error(office_format) from exc
+            with member:
+                while True:
+                    chunk = member.read(64 * 1024)
+                    if not chunk:
+                        break
+                    member_size += len(chunk)
+                    total_uncompressed += len(chunk)
+                    if member_size > member_limit or total_uncompressed > MAX_OFFICE_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES:
+                        raise _office_archive_limit_error()
+            if member_size > max(info.compress_size, 1) * MAX_OFFICE_ARCHIVE_MAX_COMPRESSION_RATIO:
                 raise _office_archive_limit_error()
 
 

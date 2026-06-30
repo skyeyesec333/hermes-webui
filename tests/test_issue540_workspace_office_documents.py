@@ -276,6 +276,42 @@ def test_xlsx_preview_preflight_rejects_oversized_shared_strings_before_loader(m
     with pytest.raises(ValueError, match="safe archive limits"):
         preview_office_document("budget.xlsx", raw)
 
+def test_xlsx_preview_preflight_measures_actual_bytes_when_zip_claims_zero(monkeypatch):
+    class FakeInfo:
+        filename = "xl/sharedStrings.xml"
+        file_size = 0
+        compress_size = 1
+
+        @staticmethod
+        def is_dir():
+            return False
+
+    class FakeArchive:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def infolist():
+            return [FakeInfo()]
+
+        @staticmethod
+        def open(_info):
+            return io.BytesIO(b"A" * 2048)
+
+    monkeypatch.setattr(office_documents, "MAX_OFFICE_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES", 1024)
+    monkeypatch.setattr(office_documents.zipfile, "ZipFile", lambda *_args, **_kwargs: FakeArchive())
+    monkeypatch.setattr(
+        office_documents,
+        "_load_workbook_reader",
+        lambda: lambda *_args, **_kwargs: pytest.fail("xlsx parser should not run when actual inflated bytes exceed the preflight cap"),
+    )
+
+    with pytest.raises(ValueError, match="safe archive limits"):
+        preview_office_document("budget.xlsx", b"placeholder")
+
 
 def _office_state_block() -> str:
     marker = "if(data.preview_kind==='office'){"

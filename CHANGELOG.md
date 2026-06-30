@@ -35,6 +35,8 @@
 
 ### Fixed
 
+- **Two new opt-in appearance skins: Neon Soft and Neon Paint.** Both are CSS-only, namespaced under `[data-skin]`, registered in server-side skin persistence, and selectable from Settings → Appearance — they change nothing unless you pick them. Neon Soft is a muted purple/violet neon; Neon Paint a bolder magenta + cyan neon. Thanks @savagebread. (#4738)
+
 - **Opt-in Shift+Enter send-key mode.** A new send-key option mirrors the existing Ctrl+Enter mode: when set to "shift+enter", Shift+Enter sends the message and a plain Enter inserts a newline; the default "enter" behavior (Enter sends, Shift+Enter newline) is unchanged when the option is off. IME composition, numpad Enter, and the command-dropdown are all handled, with no double-send. Thanks @futureworld678. (#5005)
 
 - **Configurable provider spend budget with a percent-used indicator.** The provider usage settings now have a "Monthly budget" field (with Set / Clear) and a progress bar showing how much of the budget the current monthly pace has used (e.g. "65% of $50.00 budget"). Budget input is validated on both the save and read paths via a shared coercion helper, so out-of-range or malformed values (e.g. `0.004`, `5e12`) are rejected rather than silently stored. Thanks @rodboev. (#5120, #692)

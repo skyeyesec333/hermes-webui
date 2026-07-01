@@ -6695,6 +6695,7 @@ def _run_agent_streaming(
         update_active_run(stream_id, phase="running", session_id=session_id)
         s.workspace = str(Path(workspace).expanduser().resolve())
         _last_persisted_model = getattr(s, "model", None)
+        _turn_owns_persisted_model = False
         provider_context = (
             str(model_provider).strip().lower()
             if model_provider is not None
@@ -6707,6 +6708,7 @@ def _run_agent_streaming(
             s.model = model
             s.model_provider = provider_context or None
             _last_persisted_model = model
+            _turn_owns_persisted_model = True
 
         _agent_lock = _get_session_agent_lock(session_id)
         # TD1: set thread-local env context so concurrent sessions don't clobber globals
@@ -6750,7 +6752,7 @@ def _run_agent_streaming(
         )
         # #4251: only apply the profile-repair persistence if this turn still
         # owns the session model value it last wrote.
-        if getattr(s, "model", None) == _last_persisted_model:
+        if _turn_owns_persisted_model and getattr(s, "model", None) == _last_persisted_model:
             s.model_provider = provider_context
             if _repaired and model != (s.model or ""):
                 s.model = model

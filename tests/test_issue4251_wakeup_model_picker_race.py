@@ -134,7 +134,14 @@ def _install_streaming_harness(monkeypatch, fake_session):
     monkeypatch.setitem(sys.modules, "hermes_state", fake_hermes_state)
 
 
-def _run_streaming_turn(monkeypatch, fake_session, *, stream_id):
+def _run_streaming_turn(
+    monkeypatch,
+    fake_session,
+    *,
+    stream_id,
+    dispatch_model="haiku-4-5",
+    dispatch_provider="anthropic",
+):
     _install_streaming_harness(monkeypatch, fake_session)
     fake_session.active_stream_id = stream_id
     fake_queue = queue.Queue()
@@ -143,8 +150,8 @@ def _run_streaming_turn(monkeypatch, fake_session, *, stream_id):
         streaming._run_agent_streaming(
             session_id=fake_session.session_id,
             msg_text="background wakeup turn",
-            model="haiku-4-5",
-            model_provider="anthropic",
+            model=dispatch_model,
+            model_provider=dispatch_provider,
             workspace="/tmp",
             stream_id=stream_id,
         )
@@ -154,7 +161,7 @@ def _run_streaming_turn(monkeypatch, fake_session, *, stream_id):
 
 
 def test_dispatch_stamp_does_not_clobber_newer_picker_model(monkeypatch):
-    fake_session = FakeSession(model="opus-4-8", model_provider="anthropic")
+    fake_session = FakeSession(model="opus-4-8", model_provider="openrouter")
 
     _run_streaming_turn(
         monkeypatch,
@@ -163,6 +170,7 @@ def test_dispatch_stamp_does_not_clobber_newer_picker_model(monkeypatch):
     )
 
     assert fake_session.model == "opus-4-8"
+    assert fake_session.model_provider == "openrouter"
 
 
 def test_dispatch_stamp_persists_resolved_model_when_no_race(monkeypatch):
@@ -189,3 +197,22 @@ def test_dispatch_stamp_persists_when_session_model_was_empty(monkeypatch):
 
     assert fake_session.model == "haiku-4-5"
     assert fake_session.model_provider == "anthropic"
+
+
+def test_profile_repair_skips_persistence_when_newer_picker_choice_already_won(monkeypatch):
+    fake_session = FakeSession(model="opus-4-8", model_provider="openrouter")
+    fake_session.profile = "worker-profile"
+    monkeypatch.setattr(
+        streaming,
+        "_apply_profile_home_context_to_streaming_model",
+        lambda **_kwargs: ("claude-profile-default", "anthropic", True),
+    )
+
+    _run_streaming_turn(
+        monkeypatch,
+        fake_session,
+        stream_id="stream-4251-profile-race",
+    )
+
+    assert fake_session.model == "opus-4-8"
+    assert fake_session.model_provider == "openrouter"

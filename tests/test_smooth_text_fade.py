@@ -55,6 +55,14 @@ def assert_contains_all(src: str, snippets: list[str]) -> None:
         assert snippet in src
 
 
+def slice_between(src: str, start_anchor: str, end_anchor: str) -> str:
+    start = src.find(start_anchor)
+    assert start != -1, f"start anchor not found: {start_anchor!r}"
+    end = src.find(end_anchor, start + len(start_anchor))
+    assert end != -1, f"end anchor not found after {start_anchor!r}: {end_anchor!r}"
+    return src[start:end]
+
+
 def fade_helper_script(performance_stub: str = "{_t:0,now(){return this._t;}}") -> str:
     helpers = "\n".join(
         function_block(MESSAGES_JS, name)
@@ -205,11 +213,11 @@ def test_live_streaming_assistant_content_opts_out_of_global_theme_transitions()
     inherit color/background transitions, light themes visibly flash/fade on
     each word.
     """
-    live_transition_guard = STYLE_CSS[
-        STYLE_CSS.index("Live assistant content is updated token-by-token") : STYLE_CSS.index(
-            ":root{--app-titlebar-safe-top"
-        )
-    ]
+    live_transition_guard = slice_between(
+        STYLE_CSS,
+        "Live assistant content is updated token-by-token",
+        ":root{--app-titlebar-safe-top",
+    )
     assert_contains_all(
         live_transition_guard,
         [

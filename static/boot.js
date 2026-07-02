@@ -652,6 +652,11 @@ function _micToastKeyForRecognitionError(error){
   const _micHoldThresholdMs=300;
   let _speechStopRequested=false;
   let _micWakeLock=null;
+  // Request-generation token for the async Wake Lock acquire. Bumped on every
+  // stop/release so a lock request still in flight when the mic is stopped or
+  // the tab is hidden can be detected as stale after its await resolves and
+  // released immediately instead of leaking a held screen wake lock (#5294).
+  let _micWakeLockToken=0;
 
   function _setButtonTooltipAndKey(btn, key){
     const text = t(key);
@@ -767,8 +772,20 @@ function _micToastKeyForRecognitionError(error){
 
   async function _acquireMicWakeLock(){
     if(!navigator.wakeLock||_micWakeLock) return;
+    const token=_micWakeLockToken;
     try{
-      _micWakeLock=await navigator.wakeLock.request('screen');
+      const lock=await navigator.wakeLock.request('screen');
+      // Stop-race guard (#5294 gate): the request resolves asynchronously. If
+      // the mic was stopped/hidden while it was in flight, _micWakeLockToken was
+      // bumped and/or _micActive cleared. Storing the late lock would hold a
+      // screen wake lock indefinitely after every stop path finished. Release it
+      // immediately and never store it unless still current AND still recording.
+      if(token!==_micWakeLockToken
+          || !(window._micActive&&_activeCaptureMode==='speech'&&document.visibilityState!=='hidden')){
+        try{ await lock.release(); }catch(_){}
+        return;
+      }
+      _micWakeLock=lock;
       _micWakeLock.addEventListener?.('release',()=>{ _micWakeLock=null; },{once:true});
     }catch(_){
       _micWakeLock=null;
@@ -776,6 +793,7 @@ function _micToastKeyForRecognitionError(error){
   }
 
   async function _releaseMicWakeLock(){
+    _micWakeLockToken+=1; // invalidate any in-flight acquire
     const lock=_micWakeLock;
     _micWakeLock=null;
     if(!lock) return;
@@ -795,6 +813,7 @@ function _micToastKeyForRecognitionError(error){
 
   function _stopMic(){
     _micStartSeq+=1;
+    _micWakeLockToken+=1; // invalidate any in-flight wake-lock acquire on stop (#5294)
     _isRecording=false;
     if(!window._micActive) return;
     // Stop the backend that was ACTIVE WHEN RECORDING STARTED — not whatever
@@ -815,10 +834,28 @@ function _micToastKeyForRecognitionError(error){
   }
   window._stopMic=_stopMic; // expose for send-guard above
 
+  // #4732 is a MOBILE issue: continuous dictation + onend auto-restart keeps the
+  // mic open across natural thinking pauses on phones/tablets. On DESKTOP (a fine
+  // pointer is present) that regresses the established one-shot flow — a pause
+  // commits the transcript and the mic auto-stops via _setRecording(false). Gate
+  // the continuous behavior to touch-primary devices using the SAME coarse/fine
+  // pointer signal the Enter-key mobile default uses (boot.js:~2035):
+  // matchMedia('(pointer:coarse)') && !_hasFinePointerCoexisting(). The explicit
+  // 'hermes-voice-continuous' opt-in (consumed by the voice-mode path) is also
+  // honored so a desktop user can force it on if they want.
+  function _speechContinuousEnabled(){
+    try{ if(localStorage.getItem('hermes-voice-continuous')==='true') return true; }catch(_){}
+    try{ return matchMedia('(pointer:coarse)').matches && !_hasFinePointerCoexisting(); }catch(_){ return false; }
+  }
+
   function _ensureSpeechRecognition(){
     if(!SpeechRecognition) return null;
     const sr=recognition||new SpeechRecognition();
-    sr.continuous=true;
+    // Mobile/coarse-pointer only: keep the mic open across pauses (#4732).
+    // Desktop stays one-shot (continuous=false, no onend restart) — byte-equivalent
+    // to master's flow.
+    const _continuous=_speechContinuousEnabled();
+    sr.continuous=_continuous;
     sr.interimResults=true;
     sr.lang=(typeof _locale!=='undefined'&&_locale._speech)||'en-US';
 
@@ -844,7 +881,9 @@ function _micToastKeyForRecognitionError(error){
         : ta.value;
       ta.value=committed;
       autoResize();
-      if(!_speechStopRequested&&window._micActive&&_activeCaptureMode==='speech'){
+      // Auto-restart only on mobile/coarse-pointer (#4732). On desktop _continuous
+      // is false, so this branch is skipped and the mic commits + stops one-shot.
+      if(_continuous&&!_speechStopRequested&&window._micActive&&_activeCaptureMode==='speech'){
         _prefix=committed&&!committed.endsWith(' ')&&!committed.endsWith('\n')
           ? committed+' '
           : committed;
@@ -866,7 +905,12 @@ function _micToastKeyForRecognitionError(error){
     };
 
     sr.onerror=(event)=>{
-      if((event.error==='no-speech'||event.error==='aborted')
+      // Mobile/coarse-pointer continuous mode swallows transient no-speech/aborted
+      // errors so a thinking pause doesn't end dictation (#4732). On desktop
+      // (_continuous=false) these fall through to master's normal error handling
+      // so one-shot dictation stays byte-equivalent.
+      if(_continuous
+          && (event.error==='no-speech'||event.error==='aborted')
           && window._micActive
           && _activeCaptureMode==='speech'
           && !_speechStopRequested){

@@ -1230,35 +1230,64 @@ function applySessionTitleUpdate(sid, titleText, options={}){
 // BEFORE slash rewrites (/moa, bundles) mutate the payload and BEFORE
 // uploadPendingFiles() drains S.pendingFiles — so we restore what the user
 // actually typed, not the transformed send payload.
-function _restoreComposerDraftAfterFailedSend(draftText, filesSnapshot, sid){
+function _restoreComposerDraftAfterFailedSend(draftText, filesSnapshot, sid, clearPromise){
   const restore=String(draftText||'');
   const files=Array.isArray(filesSnapshot)?filesSnapshot.filter(Boolean):[];
   if(!restore&&!files.length) return false;
-  // Persist the draft for the failed send's own session so it survives a reload
-  // regardless of which session is currently visible. Files staged in the
-  // composer are File objects (not serializable), so only text is persisted;
-  // the in-memory S.pendingFiles restore below covers the immediate re-send.
-  if(sid&&typeof _saveComposerDraftNow==='function'){
-    try{ _saveComposerDraftNow(sid, restore, []); }catch(_){ }
-  }
+
   // Only mutate the VISIBLE composer / staged tray when the failed send belongs
   // to the session the user is currently looking at — otherwise a background
   // send failure would pollute another session's composer. (Codex #5484 catch.)
   const visibleSid=(S.session&&S.session.session_id)||null;
-  if(sid&&visibleSid&&sid!==visibleSid) return false;
-  const inp=$('msg');
-  if(!inp) return false;
-  // Do not clobber a new message the user began typing during the async window.
-  if(String(inp.value||'').trim()) return false;
-  inp.value=restore;
-  if(typeof autoResize==='function') autoResize();
-  if(typeof updateSendBtn==='function') updateSendBtn();
-  // Re-stage the originally attached files so a one-key resend keeps them.
-  if(files.length){
-    S.pendingFiles=files;
-    if(typeof renderTray==='function') renderTray();
+  const belongsToVisible=!(sid&&visibleSid&&sid!==visibleSid);
+  let restoredVisible=false;
+  if(belongsToVisible){
+    const inp=$('msg');
+    // Do not clobber a new message the user began typing during the async window.
+    if(inp && !String(inp.value||'').trim()){
+      inp.value=restore;
+      if(typeof autoResize==='function') autoResize();
+      if(typeof updateSendBtn==='function') updateSendBtn();
+      // Re-stage the originally attached files so a one-key resend keeps them.
+      if(files.length){
+        S.pendingFiles=files;
+        if(typeof renderTray==='function') renderTray();
+      }
+      restoredVisible=true;
+    }
   }
-  return true;
+
+  // Persist the failed session's draft so it survives a reload, ordered AFTER the
+  // send-time _clearComposerDraft POST (text:'') resolves — otherwise the two
+  // same-origin writes can be reordered under HTTP/2 multiplexing and leave the
+  // server draft empty. (Opus #5484 NIT.) Because the persist is deferred, it
+  // must be STALE-AWARE at fire time (Codex #5488 catch): if the failed session
+  // is still visible, re-read the LIVE composer so a post-restore edit is
+  // captured rather than clobbered by the original snapshot; if we restored the
+  // visible session but the user has since switched away, skip entirely (the
+  // session-switch save path already persisted this session's composer).
+  if(sid&&typeof _saveComposerDraftNow==='function'){
+    const _persist=()=>{
+      try{
+        const stillVisible=(S.session&&S.session.session_id)===sid;
+        if(stillVisible){
+          const inp=$('msg');
+          const liveText=inp?String(inp.value||''):restore;
+          _saveComposerDraftNow(sid, liveText, S.pendingFiles?[...S.pendingFiles]:[]);
+        } else if(!restoredVisible){
+          // Background failure (sid was never the visible session): no live
+          // composer to read, so persist the captured snapshot — it's the only copy.
+          _saveComposerDraftNow(sid, restore, []);
+        }
+        // else: restored the visible composer, then the user switched away — the
+        // session-switch save path already saved sid's composer; skip stale write.
+      }catch(_){ }
+    };
+    if(clearPromise&&typeof clearPromise.then==='function') clearPromise.then(_persist,_persist);
+    else _persist();
+  }
+
+  return restoredVisible;
 }
 
 async function send(){
@@ -1550,8 +1579,13 @@ async function send(){
   if(!msgText){setComposerStatus('Nothing to send');return;}
 
   $('msg').value='';autoResize();
-  // Clear persisted composer draft since message was sent.
-  if (activeSid && typeof _clearComposerDraft === 'function') _clearComposerDraft(activeSid);
+  // Clear persisted composer draft since message was sent. Capture the promise
+  // so the #5472 failed-send restore can chain its re-persist AFTER this clear
+  // resolves — otherwise the two same-origin POSTs (clear text:'' then restore
+  // text:<draft>) can be reordered under HTTP/2 multiplexing and leave the
+  // server draft empty after a reload. (Opus #5484 NIT.)
+  let _composerDraftClearPromise=null;
+  if (activeSid && typeof _clearComposerDraft === 'function') _composerDraftClearPromise=_clearComposerDraft(activeSid);
   const displayText=_slashDisplayTextOverride||text||(uploaded.length?`Uploaded: ${uploadedNames.join(', ')}`:'(file upload)');
   const userMsg={role:'user',content:displayText,attachments:uploaded.length?uploadedNames:undefined,_ts:Date.now()/1000};
   S.toolCalls=[];  // clear tool calls from previous turn
@@ -1735,7 +1769,7 @@ async function send(){
     // composer text + attachments (cleared at send time) would otherwise be
     // lost. Put back the ORIGINAL captured draft (not the mutated /moa/bundle
     // payload) and re-stage files so the user can re-send without retyping.
-    _restoreComposerDraftAfterFailedSend(_failedSendDraftText, _failedSendFilesSnapshot, activeSid);
+    _restoreComposerDraftAfterFailedSend(_failedSendDraftText, _failedSendFilesSnapshot, activeSid, _composerDraftClearPromise);
     if(typeof clearOptimisticSessionStreaming==='function') clearOptimisticSessionStreaming(activeSid);
     // Reconcile with server truth after immediately clearing the optimistic spinner.
     if(typeof renderSessionList==='function') void renderSessionList();

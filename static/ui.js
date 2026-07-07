@@ -2570,7 +2570,24 @@ function _modelStateForSelect(sel, modelId){
   if(!value) return {model:'',model_provider:null};
   const explicitProvider=_providerFromModelValue(value);
   if(explicitProvider) return {model:value,model_provider:explicitProvider};
-  const opt=sel&&sel.selectedOptions&&sel.selectedOptions[0];
+  // Resolve the provider from the option whose VALUE matches the requested
+  // model — never blindly from sel.selectedOptions[0] (#5567). During a profile
+  // /tab switch or a model-list rebuild the dropdown transiently still has the
+  // PREVIOUS profile's default option selected (e.g. an ollama model), so reading
+  // selectedOptions[0] would stamp that foreign provider onto a model it doesn't
+  // own — which is then persisted into the session's model_provider and re-sent
+  // on every turn, bricking it with a "Provider 'X'…no API key" error for a
+  // provider the session never used.
+  let opt=null;
+  const selected=sel&&sel.selectedOptions&&sel.selectedOptions[0];
+  // Prefer the currently-selected option ONLY when it actually is the requested
+  // model — this preserves the user's exact pick in the same-value/different-
+  // provider collision case (two providers offering the same model id).
+  if(selected&&String(selected.value||'')===value){
+    opt=selected;
+  }else if(sel&&sel.options){
+    opt=Array.from(sel.options).find(o=>String(o.value||'')===value)||null;
+  }
   const provider=String(_getOptionProviderId(opt)||'').trim();
   return {model:value,model_provider:(provider&&provider!=='default')?provider:null};
 }
@@ -2645,6 +2662,47 @@ function _reconcileModelDropdownSelection(sel,data,previousState,opts){
 }
 function _providerQualifiedModelValueForSelect(sel, modelId){
   return _modelStateForSelect(sel,modelId).model;
+}
+// #5567 sticky-contamination repair. Once a session's stored `model_provider`
+// has been poisoned with a foreign provider (see _modelStateForSelect), it is
+// returned FIRST by _modelProviderForSend on every subsequent turn — so the
+// resolver fix alone can't rescue an already-poisoned session; its bad provider
+// keeps getting re-sent. On load we repair the stored provider ONLY when the
+// model string carries a slash-prefix that unambiguously CONTRADICTS the stored
+// provider (e.g. model `kilo/minimax/minimax-m3` stored with provider `ollama`).
+// In that case we drop the stored provider and let the backend re-infer from the
+// model string (kilo/… normalizes to kilocode). Deliberately conservative:
+// - only acts when the model has an inferable slash prefix (bare names untouched),
+// - never touches sessions whose stored provider legitimately cross-routes a
+//   vendor-prefixed id (`custom:*`, `openrouter`) — those own slash-prefixed
+//   models on purpose (mirrors _providerDefersMissingModelFallback / #2405),
+// - common aliases are normalized so anthropic/claude, openai/gpt, google/gemini
+//   are NOT treated as contradictions.
+function _repairContaminatedSessionModelProvider(session){
+  try{
+    if(!session) return false;
+    const stored=String(session.model_provider||'').trim();
+    if(!stored) return false;
+    const model=String(session.model||'').trim();
+    if(!model) return false;
+    // An explicit @provider:model id is self-describing — trust it, never repair.
+    if(model.startsWith('@')) return false;
+    const slash=model.indexOf('/');
+    if(slash<=0) return false; // bare model name — no inferable provider prefix.
+    // URI-scheme ids (e.g. gpt://path/model) use slashes as path separators.
+    if(/^[a-z][a-z0-9+.-]*:\/\//i.test(model)) return false;
+    const storedLower=stored.toLowerCase();
+    // Providers that legitimately route slash-prefixed vendor ids — leave alone.
+    if(storedLower==='custom'||storedLower.startsWith('custom:')||storedLower==='openrouter') return false;
+    const aliases={'claude':'anthropic','gpt':'openai','gemini':'google'};
+    const norm=p=>aliases[p]||p;
+    const inferred=norm(model.slice(0,slash).toLowerCase());
+    // Only repair on a genuine contradiction between the inferable prefix and the
+    // stored provider. If they agree (or alias-agree), the stored value is fine.
+    if(!inferred||inferred===norm(storedLower)) return false;
+    session.model_provider=null;
+    return true;
+  }catch(_){ return false; }
 }
 function _readPersistedModelState(){
   try{

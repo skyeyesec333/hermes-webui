@@ -62,6 +62,22 @@ def test_repair_helper_exists_and_is_wired_into_session_load():
     assert "_repairContaminatedSessionModelProvider(S.session)" in sess
 
 
+def test_repair_reruns_after_deferred_model_resolve():
+    """#5567 (Codex CORE finding): loadSession() repairs the provider, but the
+    deferred _resolveSessionModelForDisplaySoon() then re-fetches model_provider
+    from the backend (which echoes the still-poisoned stored value) and reassigns
+    it — undoing the repair. The repair MUST re-run after that reassignment."""
+    sess = _read(SESSIONS_JS)
+    start = sess.index("function _resolveSessionModelForDisplaySoon(sid)")
+    body = sess[start : sess.index("_modelResolutionDeferred=false", start)]
+    # The repair must run inside the resolver, after model_provider is reassigned
+    # from the backend response and before the resolution is marked settled.
+    assert "S.session.model_provider=provider||null;" in body
+    assert body.index("S.session.model_provider=provider||null;") < body.index(
+        "_repairContaminatedSessionModelProvider(S.session)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Behavioral test in Node — the real repro the maintainer asked for.
 # ---------------------------------------------------------------------------
@@ -177,6 +193,23 @@ const results = {};
   results.repair_kilocode = { changed: changed, provider_after: s.model_provider };
 }
 
+// --- Scenario 10: the deferred-resolver sequence (Codex CORE finding). Model the
+//     real load path: loadSession repairs the session, then the deferred
+//     _resolveSessionModelForDisplaySoon re-assigns model_provider from a backend
+//     payload that faithfully echoes the STILL-poisoned stored value, then the
+//     repair re-runs. Final provider must be null, not the re-echoed ollama.
+{
+  const s = { model: 'kilo/minimax/minimax-m3', model_provider: 'ollama' };
+  _repairContaminatedSessionModelProvider(s);          // loadSession() repair
+  // Deferred resolver re-fetch: backend echoes stored provider verbatim.
+  const backendModel = 'kilo/minimax/minimax-m3';
+  const backendProvider = 'ollama';
+  s.model = backendModel;
+  s.model_provider = backendProvider || null;          // sessions.js re-clobber
+  _repairContaminatedSessionModelProvider(s);           // the re-run repair
+  results.deferred_resolve = { provider_after: s.model_provider };
+}
+
 process.stdout.write(JSON.stringify(results));
 """
 
@@ -231,3 +264,7 @@ def test_model_provider_resolution_behavior():
     # though the 'kilo' prefix is not the literal provider id.
     assert r["repair_kilocode"]["changed"] is False
     assert r["repair_kilocode"]["provider_after"] == "kilocode"
+
+    # Scenario 10 — the deferred-resolver re-clobber (Codex CORE finding) is healed:
+    # after load-repair → backend echo → re-run repair, the provider stays null.
+    assert r["deferred_resolve"]["provider_after"] is None

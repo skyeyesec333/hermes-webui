@@ -2481,6 +2481,11 @@ function _resolveSessionModelForDisplaySoon(sid){
       if(!model||!S.session||S.session.session_id!==sid) return;
       S.session.model=model;
       S.session.model_provider=provider||null;
+      // #5567: the deferred resolver re-fetches model_provider from the backend,
+      // which faithfully echoes a still-poisoned stored provider — undoing the
+      // repair loadSession() just applied. Re-run it here so a contaminated
+      // session stays healed after the resolve, not just at first paint.
+      if(typeof _repairContaminatedSessionModelProvider==='function') _repairContaminatedSessionModelProvider(S.session);
       const resolvedContextLength=data.session.context_length||S.session.context_length||0;
       S.session.context_length=resolvedContextLength;
       S.session.threshold_tokens=data.session.threshold_tokens||0;
